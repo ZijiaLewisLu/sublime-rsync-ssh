@@ -215,6 +215,7 @@ class RsyncSshSaveCommand(sublime_plugin.EventListener):
 
         # Don't do anything if rsync-ssh hasn't been configured
         if not settings:
+            print("no setting")
             return
         # Don't sync single file if user has disabled sync on save
         elif settings.get("sync_on_save", True) == False:
@@ -488,33 +489,33 @@ class Rsync(threading.Thread):
             destination_path = self.destination.get("remote_path") + self.specific_path.replace(self.local_path, "")
 
         # Check ssh connection, and get path of rsync on the remote host
-        check_command = self.ssh_command_with_default_args()
-        check_command.extend([
-            self.destination.get("remote_user")+"@"+self.destination.get("remote_host"),
-            "LANG=C which rsync"
-        ])
-        try:
-            self.rsync_path = check_output(check_command, timeout=self.timeout, stderr=subprocess.STDOUT).rstrip()
-            if not self.rsync_path.endswith("/rsync"):
-                console_show(self.view.window())
-                message = "ERROR: Unable to locate rsync on "+self.destination.get("remote_host")
-                console_print(self.destination.get("remote_host"), self.prefix, message)
-                console_print(self.destination.get("remote_host"), self.prefix, self.rsync_path)
-                return
-        except subprocess.TimeoutExpired as error:
-            console_show(self.view.window())
-            console_print(self.destination.get("remote_host"), self.prefix, "ERROR: "+error.output)
-            return
-        except subprocess.CalledProcessError as error:
-            console_show(self.view.window())
-            if error.returncode == 255 and error.output == '':
-                console_print(self.destination.get("remote_host"), self.prefix, "ERROR: ssh check command failed, have you accepted the remote host key?")
-                console_print(self.destination.get("remote_host"), self.prefix, "       Try running the ssh command manually in a terminal:")
-                console_print(self.destination.get("remote_host"), self.prefix, "       "+" ".join(error.cmd))
-            else:
-                console_print(self.destination.get("remote_host"), self.prefix, "ERROR: "+error.output)
+        # check_command = self.ssh_command_with_default_args()
+        # check_command.extend([
+        #     self.destination.get("remote_user")+"@"+self.destination.get("remote_host"),
+        #     "LANG=C which rsync"
+        # ])
+        # try:
+        #     self.rsync_path = check_output(check_command, timeout=self.timeout, stderr=subprocess.STDOUT).rstrip()
+        #     if not self.rsync_path.endswith("/rsync"):
+        #         console_show(self.view.window())
+        #         message = "ERROR: Unable to locate rsync on "+self.destination.get("remote_host")
+        #         console_print(self.destination.get("remote_host"), self.prefix, message)
+        #         console_print(self.destination.get("remote_host"), self.prefix, self.rsync_path)
+        #         return
+        # except subprocess.TimeoutExpired as error:
+        #     console_show(self.view.window())
+        #     console_print(self.destination.get("remote_host"), self.prefix, "ERROR: "+error.output)
+        #     return
+        # except subprocess.CalledProcessError as error:
+        #     console_show(self.view.window())
+        #     if error.returncode == 255 and error.output == '':
+        #         console_print(self.destination.get("remote_host"), self.prefix, "ERROR: ssh check command failed, have you accepted the remote host key?")
+        #         console_print(self.destination.get("remote_host"), self.prefix, "       Try running the ssh command manually in a terminal:")
+        #         console_print(self.destination.get("remote_host"), self.prefix, "       "+" ".join(error.cmd))
+        #     else:
+        #         console_print(self.destination.get("remote_host"), self.prefix, "ERROR: "+error.output)
 
-            return
+        #     return
 
         # Remote pre command
         if self.destination.get("remote_pre_command"):
@@ -536,7 +537,9 @@ class Rsync(threading.Thread):
         # Build rsync command
         rsync_command = [
             "rsync", "-v", "-zar",
-            "-e", " ".join(self.ssh_command_with_default_args())
+            "-e", 
+            " ".join(self.ssh_command_with_default_args())
+            # '"'+" ".join(self.ssh_command_with_default_args())+'"'
         ]
 
         # We allow options to be specified as "--foo bar" in the config so we need to split all options on first space after the option name
@@ -556,12 +559,12 @@ class Rsync(threading.Thread):
         console_print(self.destination.get("remote_host"), self.prefix, " ".join(rsync_command))
 
         # Add mkdir unless we have a --dry-run flag
-        if  len([option for option in rsync_command if '--dry-run' in option]) == 0:
-            rsync_command.extend([
-                "--rsync-path",
-                "mkdir -p '" + os.path.dirname(destination_path) + "' && " + self.rsync_path
-            ])
-
+        # if  len([option for option in rsync_command if '--dry-run' in option]) == 0:
+        #     rsync_command.extend([
+        #         "--rsync-path",
+        #         "mkdir -p '" + os.path.dirname(destination_path) + "' && " + self.rsync_path
+        #     ])
+        
         # Execute rsync
         try:
             output = check_output(rsync_command, stderr=subprocess.STDOUT)
@@ -576,6 +579,8 @@ class Rsync(threading.Thread):
         except subprocess.CalledProcessError as error:
             console_show(self.view.window())
             if  len([option for option in rsync_command if '--dry-run' in option]) != 0 and re.search("No such file or directory", error.output, re.MULTILINE):
+                # print(error.output)
+                # print(rsync_command)
                 console_print(
                     self.destination.get("remote_host"), self.prefix,
                     "WARNING: Unable to do dry run, remote directory "+os.path.dirname(destination_path)+" does not exist."
