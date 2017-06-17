@@ -291,118 +291,72 @@ class RsyncSSH(threading.Thread):
         # Each rsync is started in a separate thread
         threads = []
 
-        # Iterate over project folders, as we need to know where they are in the file system (they are the containers)
-        for folder_path_full in self.view.window().folders():
-            folder_path_basename = os.path.basename(folder_path_full)
 
-            # Iterate over remotes which is indexed by the local folder path
-            for remote_key in self.settings.get("remotes").keys():
-                # Disallow use of . as remote_key when more than one remote is present
-                if remote_key == '.' and len(self.settings.get("remotes").keys()) > 1:
-                    console_print("", folder_path_basename, "Use of . is ambiguous when project has more than one folder.")
+        # Iterate over remotes which is indexed by the local folder path
+        for remote_key in self.settings.get("remotes").keys():
+            # Disallow use of . as remote_key when more than one remote is present
+            if remote_key == '.' and len(self.settings.get("remotes").keys()) > 1:
+                console_print("", "", "Use of . is ambiguous when project has more than one folder.")
+                continue
+
+            # Setup logging prefix - default to base name of the container folder
+            prefix = self.path_being_saved
+
+            # We have a remote with a regular path, lets update the prefix with subfolder name if it exists
+            if remote_key == ".":
+                remote_key = os.path.dirname(self.view.window().project_file_name())
+
+            # if the condition hold true
+            # either the remote_key is not the correct one
+            # or the path_being_save is not for rsync
+            if not remote_key in self.path_being_saved:
+                continue
+
+            # Might have mixed slash characters on Windows.
+            local_path = normalize_path(self.path_being_saved)
+
+            # For each remote destination iterate over each destination and start a rsync thread
+            for destination in self.settings.get("remotes").get(remote_key):
+
+                # Build destination string (format=user@host:port:path)
+                destination_string = ":".join([
+                    destination.get("remote_user")+"@"+destination.get("remote_host"),
+                    str(destination.get("remote_port",22)),
+                    destination.get("remote_path")
+                ])
+
+                # If this remote has restrictions, we'll respect them
+                if self.restrict_to_destinations and destination_string not in self.restrict_to_destinations:
                     continue
 
-                # Resolve local path to absolute path
-                local_path = ""
+                # Merge local settings with global defaults
+                local_excludes = list(global_excludes)
+                local_excludes.extend(destination.get("excludes", []))
 
-                # Setup logging prefix - default to base name of the container folder
-                prefix = folder_path_basename
+                local_options = list(global_options)
+                local_options.extend(destination.get("options", []))
 
-                # We have a remote with a regular path, lets update the prefix with subfolder name if it exists
-                if remote_key != ".":
-                    # Just continue if remote_key doesn't contain the folder_path_basename, it means
-                    # the remote_key(local_path) is not within the directory we are processing now
-                    if not folder_path_basename in remote_key:
-                        continue
+                thread = Rsync(
+                    self.view,
+                    ssh_binary,
+                    local_path,
+                    prefix,
+                    destination,
+                    local_excludes,
+                    local_options,
+                    connect_timeout,
+                    "", # self.path_being_saved,
+                    self.force_sync
+                )
+                threads.append(thread)
 
-                    # Look for subfolder in remote_key
-                    # If remote key is relative also get the split prefix so we can compose the container folder later
-                    [split_prefix, subfolder] = str.rsplit(remote_key, folder_path_basename, 1)
-                    # If split prefix is absolute, we'll remove it to get a nice short prefix
-                    if split_prefix.startswith("/"):
-                        split_prefix = ""
-                    folder_path_basename = split_prefix+folder_path_basename
+                # Update status message
+                status_bar_message = "Rsyncing to " + str(len(threads)) + " destination"
+                if len(self.view.window().folders()) > 1:
+                    status_bar_message += "s"
+                self.view.set_status("00000_rsync_ssh_status", status_bar_message)
 
-                    # Get container folder from real folder, ignore the rest
-                    container_folder = (str.rsplit(folder_path_full, folder_path_basename, 1))[0]
-
-                    # Update prefix with subfolder and remove container folder to get nice short prefix
-                    prefix = split_prefix+prefix+subfolder
-                    prefix = prefix.replace(container_folder, "")
-
-                    # Remote key with absolute path and subfolder
-                    if remote_key.startswith(container_folder) and len(subfolder) > 0:
-                        local_path = container_folder+folder_path_basename+subfolder
-                    # Remote key with absolute path and no subfolder
-                    elif remote_key.startswith(container_folder) and len(subfolder) == 0:
-                        local_path = container_folder+folder_path_basename
-                    # Remote key with relative  path and subfolder
-                    elif remote_key.startswith(folder_path_basename) and len(subfolder) > 0:
-                        local_path = container_folder+folder_path_basename+subfolder
-                    # Remote key with relative  path and no subfolder
-                    elif remote_key.startswith(folder_path_basename) and len(subfolder) == 0:
-                        local_path = container_folder+folder_path_basename+subfolder
-                    # We tried everything, it should have worked ;-)
-                    else:
-                        console_print("","","Unable to determine local path for "+remote_key)
-                        continue
-                # We have a remote with '.' as path
-                else:
-                    # Remote key is current path, will only work with a single folder project
-                    local_path = os.path.dirname(self.view.window().project_file_name())
-
-                # Might have mixed slash characters on Windows.
-                local_path = normalize_path(local_path)
-
-                # For each remote destination iterate over each destination and start a rsync thread
-                for destination in self.settings.get("remotes").get(remote_key):
-                    # Don't sync if saving single file outside of current remotes local file path
-                    if self.path_being_saved and os.path.isfile(self.path_being_saved) and not self.path_being_saved.startswith(local_path+"/"):
-                        continue
-
-                    # Don't sync if directory path being saved does not match the local path
-                    if self.path_being_saved and os.path.isdir(self.path_being_saved) and self.path_being_saved != local_path:
-                        continue
-
-                    # Build destination string (format=user@host:port:path)
-                    destination_string = ":".join([
-                        destination.get("remote_user")+"@"+destination.get("remote_host"),
-                        str(destination.get("remote_port",22)),
-                        destination.get("remote_path")
-                    ])
-
-                    # If this remote has restrictions, we'll respect them
-                    if self.restrict_to_destinations and destination_string not in self.restrict_to_destinations:
-                        continue
-
-                    # Merge local settings with global defaults
-                    local_excludes = list(global_excludes)
-                    local_excludes.extend(destination.get("excludes", []))
-
-                    local_options = list(global_options)
-                    local_options.extend(destination.get("options", []))
-
-                    thread = Rsync(
-                        self.view,
-                        ssh_binary,
-                        local_path,
-                        prefix,
-                        destination,
-                        local_excludes,
-                        local_options,
-                        connect_timeout,
-                        self.path_being_saved,
-                        self.force_sync
-                    )
-                    threads.append(thread)
-
-                    # Update status message
-                    status_bar_message = "Rsyncing to " + str(len(threads)) + " destination"
-                    if len(self.view.window().folders()) > 1:
-                        status_bar_message += "s"
-                    self.view.set_status("00000_rsync_ssh_status", status_bar_message)
-
-                    thread.start()
+                thread.start()
 
         # Wait for all threads to finish
         if threads:
@@ -477,45 +431,10 @@ class Rsync(threading.Thread):
             return
 
         # What to rsync
-        source_path      = self.local_path + "/"
+        source_path = self.local_path
+        if os.path.isdir(source_path) and not source_path.endswith('/'):
+            source_path = self.local_path + "/"
         destination_path = self.destination.get("remote_path")
-
-        # Handle specific path syncs (e.g. save events and specific remote)
-        if self.specific_path and os.path.isfile(self.specific_path) and self.specific_path.startswith(self.local_path+"/"):
-            source_path      = self.specific_path
-            destination_path = self.destination.get("remote_path") + self.specific_path.replace(self.local_path, "")
-        elif self.specific_path and os.path.isdir(self.specific_path) and self.specific_path.startswith(self.local_path+"/"):
-            source_path      = self.specific_path + "/"
-            destination_path = self.destination.get("remote_path") + self.specific_path.replace(self.local_path, "")
-
-        # Check ssh connection, and get path of rsync on the remote host
-        # check_command = self.ssh_command_with_default_args()
-        # check_command.extend([
-        #     self.destination.get("remote_user")+"@"+self.destination.get("remote_host"),
-        #     "LANG=C which rsync"
-        # ])
-        # try:
-        #     self.rsync_path = check_output(check_command, timeout=self.timeout, stderr=subprocess.STDOUT).rstrip()
-        #     if not self.rsync_path.endswith("/rsync"):
-        #         console_show(self.view.window())
-        #         message = "ERROR: Unable to locate rsync on "+self.destination.get("remote_host")
-        #         console_print(self.destination.get("remote_host"), self.prefix, message)
-        #         console_print(self.destination.get("remote_host"), self.prefix, self.rsync_path)
-        #         return
-        # except subprocess.TimeoutExpired as error:
-        #     console_show(self.view.window())
-        #     console_print(self.destination.get("remote_host"), self.prefix, "ERROR: "+error.output)
-        #     return
-        # except subprocess.CalledProcessError as error:
-        #     console_show(self.view.window())
-        #     if error.returncode == 255 and error.output == '':
-        #         console_print(self.destination.get("remote_host"), self.prefix, "ERROR: ssh check command failed, have you accepted the remote host key?")
-        #         console_print(self.destination.get("remote_host"), self.prefix, "       Try running the ssh command manually in a terminal:")
-        #         console_print(self.destination.get("remote_host"), self.prefix, "       "+" ".join(error.cmd))
-        #     else:
-        #         console_print(self.destination.get("remote_host"), self.prefix, "ERROR: "+error.output)
-
-        #     return
 
         # Remote pre command
         if self.destination.get("remote_pre_command"):
@@ -539,7 +458,6 @@ class Rsync(threading.Thread):
             "rsync", "-v", "-zar",
             "-e", 
             " ".join(self.ssh_command_with_default_args())
-            # '"'+" ".join(self.ssh_command_with_default_args())+'"'
         ]
 
         # We allow options to be specified as "--foo bar" in the config so we need to split all options on first space after the option name
@@ -558,13 +476,6 @@ class Rsync(threading.Thread):
         # Show actual rsync command in the console
         console_print(self.destination.get("remote_host"), self.prefix, " ".join(rsync_command))
 
-        # Add mkdir unless we have a --dry-run flag
-        # if  len([option for option in rsync_command if '--dry-run' in option]) == 0:
-        #     rsync_command.extend([
-        #         "--rsync-path",
-        #         "mkdir -p '" + os.path.dirname(destination_path) + "' && " + self.rsync_path
-        #     ])
-        
         # Execute rsync
         try:
             output = check_output(rsync_command, stderr=subprocess.STDOUT)
