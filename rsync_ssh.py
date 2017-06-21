@@ -447,7 +447,9 @@ class Rsync(threading.Thread):
         # Build list with defaults
         ssh_command = [
             self.ssh_binary, "-q", "-T",
-            "-o", "ConnectTimeout="+str(self.timeout)
+            "-o", "ConnectTimeout="+str(self.timeout),
+            "-M",
+            "-S", "~/.ssh/master-socket/%r@%h:%p",
         ]
         if self.destination.get("remote_port"):
             ssh_command.extend(["-p", str(self.destination.get("remote_port"))])
@@ -455,21 +457,6 @@ class Rsync(threading.Thread):
         return ssh_command
 
     def run(self):
-        # Cygwin version of rsync is assumed on Windows. Local path needs to be converted using cygpath.
-        if sublime.platform() == "windows":
-            try:
-                self.local_path = check_output(["cygpath", self.local_path]).strip()
-                if self.specific_path:
-                    self.specific_path = check_output(["cygpath", self.specific_path]).strip()
-            except subprocess.CalledProcessError as error:
-                console_show(self.view.window())
-                console_print(
-                    self.destination.get("remote_host"),
-                    self.prefix,
-                    "ERROR: Failed to run cygpath to convert local file path. Can't continue."
-                )
-                console_print(self.destination.get("remote_host"), self.prefix, error.output)
-                return
 
         # Skip disabled destinations, unless we explicitly force a sync (e.g. for specific destinations)
         if not self.force_sync and not self.destination.get("enabled", 1):
@@ -487,6 +474,26 @@ class Rsync(threading.Thread):
         elif self.specific_path and os.path.isdir(self.specific_path) and self.specific_path.startswith(self.local_path+"/"):
             source_path      = self.specific_path + "/"
             destination_path = self.destination.get("remote_path") + self.specific_path.replace(self.local_path, "")
+
+        # Cygwin version of rsync is assumed on Windows. Local path needs to be converted using cygpath.
+        if sublime.platform() == "windows":
+            try:
+                # self.local_path = check_output(["cygpath", self.local_path]).strip()
+                # if self.specific_path:
+                #     self.specific_path = check_output(["cygpath", self.specific_path]).strip()
+                source_path = check_output(["cygpath", source_path]).strip()
+            except subprocess.CalledProcessError as error:
+                console_show(self.view.window())
+                console_print(
+                    self.destination.get("remote_host"),
+                    self.prefix,
+                    "ERROR: Failed to run cygpath to convert local file path. Can't continue."
+                )
+                console_print(self.destination.get("remote_host"), self.prefix, error.output)
+                return
+
+
+
 
         # Check ssh connection, and get path of rsync on the remote host
         # check_command = self.ssh_command_with_default_args()
@@ -539,8 +546,7 @@ class Rsync(threading.Thread):
             "rsync", "-v", "-zar",
             "-e", 
             " ".join(self.ssh_command_with_default_args())
-            # '"'+" ".join(self.ssh_command_with_default_args())+'"'
-        ]
+            ]
 
         # We allow options to be specified as "--foo bar" in the config so we need to split all options on first space after the option name
         for option in self.options:
