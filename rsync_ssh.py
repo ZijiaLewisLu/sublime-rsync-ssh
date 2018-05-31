@@ -1,6 +1,7 @@
 """sublime-rsync-ssh: A Sublime Text 3 plugin for syncing local folders to remote servers."""
 import sublime, sublime_plugin
 import subprocess, os, re, threading
+import time
 
 def console_print(host, prefix, output):
     """Print message to console"""
@@ -17,6 +18,10 @@ def console_print(host, prefix, output):
 def console_show(window=sublime.active_window()):
     """Show console panel"""
     window.run_command("show_panel", {"panel": "console", "toggle": False})
+
+def console_toggle(window=sublime.active_window()):
+    """Show console panel"""
+    window.run_command("show_panel", {"panel": "console", "toggle": True})    
 
 def normalize_path(path):
     """Normalizes path to Unix format, converting back- to forward-slashes."""
@@ -215,7 +220,7 @@ class RsyncSshSaveCommand(sublime_plugin.EventListener):
 
         # Don't do anything if rsync-ssh hasn't been configured
         if not settings:
-            print("no setting")
+            # print("no setting")
             return
         # Don't sync single file if user has disabled sync on save
         elif settings.get("sync_on_save", True) == False:
@@ -412,6 +417,12 @@ class RsyncSSH(threading.Thread):
             self.view.set_status("00000_rsync_ssh_status", "")
             sublime.status_message(status_bar_message + " - done.")
             console_print("", "", "done")
+
+            if self.settings.get("msg_after_save", False):
+                console_show(self.view.window())
+                time.sleep(0.5)
+                console_toggle(self.view.window())
+
         else:
             status_bar_message = self.view.get_status("00000_rsync_ssh_status")
             self.view.set_status("00000_rsync_ssh_status", "")
