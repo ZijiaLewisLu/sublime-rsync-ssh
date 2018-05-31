@@ -1,6 +1,7 @@
 """sublime-rsync-ssh: A Sublime Text 3 plugin for syncing local folders to remote servers."""
 import sublime, sublime_plugin
 import subprocess, os, re, threading
+import time
 
 def console_print(host, prefix, output):
     """Print message to console"""
@@ -17,6 +18,10 @@ def console_print(host, prefix, output):
 def console_show(window=sublime.active_window()):
     """Show console panel"""
     window.run_command("show_panel", {"panel": "console", "toggle": False})
+
+def console_toggle(window=sublime.active_window()):
+    """Show console panel"""
+    window.run_command("show_panel", {"panel": "console", "toggle": True})    
 
 def normalize_path(path):
     """Normalizes path to Unix format, converting back- to forward-slashes."""
@@ -215,7 +220,7 @@ class RsyncSshSaveCommand(sublime_plugin.EventListener):
 
         # Don't do anything if rsync-ssh hasn't been configured
         if not settings:
-            print("no setting")
+            # print("no setting")
             return
         # Don't sync single file if user has disabled sync on save
         elif settings.get("sync_on_save", True) == False:
@@ -366,6 +371,12 @@ class RsyncSSH(threading.Thread):
             self.view.set_status("00000_rsync_ssh_status", "")
             sublime.status_message(status_bar_message + " - done.")
             console_print("", "", "done")
+
+            if self.settings.get("msg_after_save", False):
+                console_show(self.view.window())
+                time.sleep(0.5)
+                console_toggle(self.view.window())
+
         else:
             status_bar_message = self.view.get_status("00000_rsync_ssh_status")
             self.view.set_status("00000_rsync_ssh_status", "")
@@ -401,7 +412,9 @@ class Rsync(threading.Thread):
         # Build list with defaults
         ssh_command = [
             self.ssh_binary, "-q", "-T",
-            "-o", "ConnectTimeout="+str(self.timeout)
+            "-o", "ConnectTimeout="+str(self.timeout),
+            "-M",
+            "-S", "~/.ssh/master-socket/%r@%h:%p",
         ]
         if self.destination.get("remote_port"):
             ssh_command.extend(["-p", str(self.destination.get("remote_port"))])
@@ -409,21 +422,6 @@ class Rsync(threading.Thread):
         return ssh_command
 
     def run(self):
-        # Cygwin version of rsync is assumed on Windows. Local path needs to be converted using cygpath.
-        if sublime.platform() == "windows":
-            try:
-                self.local_path = check_output(["cygpath", self.local_path]).strip()
-                if self.specific_path:
-                    self.specific_path = check_output(["cygpath", self.specific_path]).strip()
-            except subprocess.CalledProcessError as error:
-                console_show(self.view.window())
-                console_print(
-                    self.destination.get("remote_host"),
-                    self.prefix,
-                    "ERROR: Failed to run cygpath to convert local file path. Can't continue."
-                )
-                console_print(self.destination.get("remote_host"), self.prefix, error.output)
-                return
 
         # Skip disabled destinations, unless we explicitly force a sync (e.g. for specific destinations)
         if not self.force_sync and not self.destination.get("enabled", 1):
@@ -435,6 +433,61 @@ class Rsync(threading.Thread):
         if os.path.isdir(source_path) and not source_path.endswith('/'):
             source_path = self.local_path + "/"
         destination_path = self.destination.get("remote_path")
+
+        # Handle specific path syncs (e.g. save events and specific remote)
+        if self.specific_path and os.path.isfile(self.specific_path) and self.specific_path.startswith(self.local_path+"/"):
+            source_path      = self.specific_path
+            destination_path = self.destination.get("remote_path") + self.specific_path.replace(self.local_path, "")
+        elif self.specific_path and os.path.isdir(self.specific_path) and self.specific_path.startswith(self.local_path+"/"):
+            source_path      = self.specific_path + "/"
+            destination_path = self.destination.get("remote_path") + self.specific_path.replace(self.local_path, "")
+
+        # Cygwin version of rsync is assumed on Windows. Local path needs to be converted using cygpath.
+        if sublime.platform() == "windows":
+            try:
+                # self.local_path = check_output(["cygpath", self.local_path]).strip()
+                # if self.specific_path:
+                #     self.specific_path = check_output(["cygpath", self.specific_path]).strip()
+                source_path = check_output(["cygpath", source_path]).strip()
+            except subprocess.CalledProcessError as error:
+                console_show(self.view.window())
+                console_print(
+                    self.destination.get("remote_host"),
+                    self.prefix,
+                    "ERROR: Failed to run cygpath to convert local file path. Can't continue."
+                )
+                console_print(self.destination.get("remote_host"), self.prefix, error.output)
+                return
+
+
+        # Check ssh connection, and get path of rsync on the remote host
+        # check_command = self.ssh_command_with_default_args()
+        # check_command.extend([
+        #     self.destination.get("remote_user")+"@"+self.destination.get("remote_host"),
+        #     "LANG=C which rsync"
+        # ])
+        # try:
+        #     self.rsync_path = check_output(check_command, timeout=self.timeout, stderr=subprocess.STDOUT).rstrip()
+        #     if not self.rsync_path.endswith("/rsync"):
+        #         console_show(self.view.window())
+        #         message = "ERROR: Unable to locate rsync on "+self.destination.get("remote_host")
+        #         console_print(self.destination.get("remote_host"), self.prefix, message)
+        #         console_print(self.destination.get("remote_host"), self.prefix, self.rsync_path)
+        #         return
+        # except subprocess.TimeoutExpired as error:
+        #     console_show(self.view.window())
+        #     console_print(self.destination.get("remote_host"), self.prefix, "ERROR: "+error.output)
+        #     return
+        # except subprocess.CalledProcessError as error:
+        #     console_show(self.view.window())
+        #     if error.returncode == 255 and error.output == '':
+        #         console_print(self.destination.get("remote_host"), self.prefix, "ERROR: ssh check command failed, have you accepted the remote host key?")
+        #         console_print(self.destination.get("remote_host"), self.prefix, "       Try running the ssh command manually in a terminal:")
+        #         console_print(self.destination.get("remote_host"), self.prefix, "       "+" ".join(error.cmd))
+        #     else:
+        #         console_print(self.destination.get("remote_host"), self.prefix, "ERROR: "+error.output)
+
+        #     return
 
         # Remote pre command
         if self.destination.get("remote_pre_command"):
@@ -458,7 +511,7 @@ class Rsync(threading.Thread):
             "rsync", "-v", "-zar",
             "-e", 
             " ".join(self.ssh_command_with_default_args())
-        ]
+            ]
 
         # We allow options to be specified as "--foo bar" in the config so we need to split all options on first space after the option name
         for option in self.options:
